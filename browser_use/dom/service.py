@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from importlib import resources
 from typing import TYPE_CHECKING, Optional
+import time
 
 if TYPE_CHECKING:
 	from playwright.async_api import Page
@@ -51,31 +52,56 @@ class DomService:
 		focus_element: int,
 		viewport_expansion: int,
 	) -> tuple[DOMElementNode, SelectorMap]:
-		if await self.page.evaluate('1+1') != 2:
-			raise ValueError('The page cannot evaluate javascript code properly')
-
-		# NOTE: We execute JS code in the browser to extract important DOM information.
-		#       The returned hash map contains information about the DOM tree and the
-		#       relationship between the DOM elements.
-		debug_mode = logger.getEffectiveLevel() == logging.DEBUG
 		args = {
 			'doHighlightElements': highlight_elements,
 			'focusHighlightIndex': focus_element,
 			'viewportExpansion': viewport_expansion,
-			'debugMode': debug_mode,
 		}
-
+		
+		t0 = time.time()
+		result = await self.page.evaluate(self.js_code, args)
+		
+		# Handle the JSON string returned from JavaScript
 		try:
-			eval_page = await self.page.evaluate(self.js_code, args)
-		except Exception as e:
-			logger.error('Error evaluating JavaScript: %s', e)
-			raise
-
-		# Only log performance metrics in debug mode
-		if debug_mode and 'perfMetrics' in eval_page:
-			logger.debug('DOM Tree Building Performance Metrics:\n%s', json.dumps(eval_page['perfMetrics'], indent=2))
-
-		return await self._construct_dom_tree(eval_page)
+			if isinstance(result, str):
+				eval_page = json.loads(result)
+			else:
+				# Backward compatibility with older versions
+				eval_page = result
+		except json.JSONDecodeError:
+			# If JSON parsing fails, assume it's not a string that needs parsing
+			eval_page = result
+		
+		t9 = time.time()
+		logger.info(f"buildDomTree.js time: {t9-t0:.3f}(Sec)")
+		
+		# Use construct_dom_tree for complex JSON structure with node map
+		if isinstance(eval_page, dict) and 'map' in eval_page and 'rootId' in eval_page:
+			return await self._construct_dom_tree(eval_page)
+		
+		# Fallback to simple node parsing for direct node data
+		if not isinstance(eval_page, dict):
+			raise ValueError(f"Expected dict, got {type(eval_page)}: {eval_page}")
+		
+		html_to_dict = self._parse_node(eval_page)
+		
+		if html_to_dict is None or not isinstance(html_to_dict, DOMElementNode):
+			raise ValueError('Failed to parse HTML to dictionary')
+		
+		# Create selector map by traversing the tree
+		selector_map = {}
+		
+		def _collect_interactive_elements(node):
+			if isinstance(node, DOMElementNode) and node.highlight_index is not None:
+				selector_map[node.highlight_index] = node
+				
+			if isinstance(node, DOMElementNode):
+				for child in node.children:
+					_collect_interactive_elements(child)
+		
+		_collect_interactive_elements(html_to_dict)
+		
+		return html_to_dict, selector_map
 
 	@time_execution_async('--construct_dom_tree')
 	async def _construct_dom_tree(
@@ -88,8 +114,9 @@ class DomService:
 		selector_map = {}
 		node_map = {}
 
+		# First pass: create all nodes
 		for id, node_data in js_node_map.items():
-			node, children_ids = self._parse_node(node_data)
+			node = self._parse_node(node_data)
 			if node is None:
 				continue
 
@@ -98,17 +125,25 @@ class DomService:
 			if isinstance(node, DOMElementNode) and node.highlight_index is not None:
 				selector_map[node.highlight_index] = node
 
-			# NOTE: We know that we are building the tree bottom up
-			#       and all children are already processed.
-			if isinstance(node, DOMElementNode):
-				for child_id in children_ids:
-					if child_id not in node_map:
-						continue
+		# Second pass: build the tree structure
+		for id, node_data in js_node_map.items():
+			if id not in node_map:
+				continue
+			
+			# Skip if not an element node or has no children
+			if not isinstance(node_map[id], DOMElementNode) or 'children' not in node_data:
+				continue
+			
+			parent_node = node_map[id]
+			
+			# Process children
+			for child_id in node_data['children']:
+				if child_id not in node_map:
+					continue
 
-					child_node = node_map[child_id]
-
-					child_node.parent = node
-					node.children.append(child_node)
+				child_node = node_map[child_id]
+				child_node.parent = parent_node
+				parent_node.children.append(child_node)
 
 		html_to_dict = node_map[str(js_root_id)]
 
@@ -126,9 +161,9 @@ class DomService:
 	def _parse_node(
 		self,
 		node_data: dict,
-	) -> tuple[Optional[DOMBaseNode], list[int]]:
+	) -> Optional[DOMBaseNode]:
 		if not node_data:
-			return None, []
+			return None
 
 		# Process text nodes immediately
 		if node_data.get('type') == 'TEXT_NODE':
@@ -137,7 +172,7 @@ class DomService:
 				is_visible=node_data['isVisible'],
 				parent=None,
 			)
-			return text_node, []
+			return text_node
 
 		# Process coordinates if they exist for element nodes
 
@@ -164,6 +199,4 @@ class DomService:
 			viewport_info=viewport_info,
 		)
 
-		children_ids = node_data.get('children', [])
-
-		return element_node, children_ids
+		return element_node
