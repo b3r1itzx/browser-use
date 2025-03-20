@@ -1049,7 +1049,9 @@
     }
   }
 
+  const tree = JSON.stringify(rootId);
+
   return debugMode ?
     { rootId, map: DOM_HASH_MAP, perfMetrics: PERF_METRICS } :
-    { rootId, map: DOM_HASH_MAP };
+    { tree, map: DOM_HASH_MAP };
 };
