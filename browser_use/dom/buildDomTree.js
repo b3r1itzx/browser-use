@@ -996,8 +996,10 @@
 
   const rootId = buildDomTree(document.body);
 
-  // Clear the cache before starting
-  DOM_CACHE.clearCache();
+  // We could keep the cache but implement occasional cleaning
+  if (DOM_CACHE.boundingRects.size > 10000) {
+    DOM_CACHE.clearCache();
+  }
 
   // Only process metrics in debug mode
   if (debugMode && PERF_METRICS) {
@@ -1056,3 +1058,30 @@
       { rootId, map: DOM_HASH_MAP }
   );
 };
+
+// In JavaScript, implement chunk processing
+function processNodesInChunks(nodes, chunkSize = 500) {
+    return new Promise(resolve => {
+        const results = [];
+        let index = 0;
+        
+        function processChunk() {
+            const chunk = nodes.slice(index, index + chunkSize);
+            index += chunkSize;
+            
+            for (const node of chunk) {
+                // Process node...
+                results.push(processedNode);
+            }
+            
+            if (index < nodes.length) {
+                // Allow other operations to happen between chunks
+                setTimeout(processChunk, 0);
+            } else {
+                resolve(results);
+            }
+        }
+        
+        processChunk();
+    });
+}

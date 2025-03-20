@@ -28,11 +28,13 @@ class ViewportInfo:
 
 
 class DomService:
+	# Load JS code once at class level instead of per-instance
+	JS_CODE = resources.read_text('browser_use.dom', 'buildDomTree.js')
+
 	def __init__(self, page: 'Page'):
 		self.page = page
 		self.xpath_cache = {}
-
-		self.js_code = resources.read_text('browser_use.dom', 'buildDomTree.js')
+		self.js_code = self.JS_CODE  # Reference the class variable
 
 	# region - Clickable elements
 	@time_execution_async('--get_clickable_elements')
