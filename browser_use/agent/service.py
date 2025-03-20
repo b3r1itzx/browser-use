@@ -507,27 +507,35 @@ class Agent(Generic[Context]):
 	@time_execution_async('--get_next_action (agent)')
 	async def get_next_action(self, input_messages: list[BaseMessage]) -> AgentOutput:
 		"""Get next action from LLM based on current state"""
+		start_time = time.time()
 		input_messages = self._convert_input_messages(input_messages)
+		input_token_count = self._message_manager.state.history.current_tokens
+		
+		llm_start_time = time.time()
+		try:
+			if self.tool_calling_method == 'raw':
+				output = self.llm.invoke(input_messages)
+				# TODO: currently invoke does not return reasoning_content, we should override invoke
+				output.content = self._remove_think_tags(str(output.content))
+				try:
+					parsed_json = extract_json_from_model_output(output.content)
+					parsed = self.AgentOutput(**parsed_json)
+				except (ValueError, ValidationError) as e:
+					logger.warning(f'Failed to parse model output: {output} {str(e)}')
+					raise ValueError('Could not parse response.')
 
-		if self.tool_calling_method == 'raw':
-			output = self.llm.invoke(input_messages)
-			# TODO: currently invoke does not return reasoning_content, we should override invoke
-			output.content = self._remove_think_tags(str(output.content))
-			try:
-				parsed_json = extract_json_from_model_output(output.content)
-				parsed = self.AgentOutput(**parsed_json)
-			except (ValueError, ValidationError) as e:
-				logger.warning(f'Failed to parse model output: {output} {str(e)}')
-				raise ValueError('Could not parse response.')
-
-		elif self.tool_calling_method is None:
-			structured_llm = self.llm.with_structured_output(self.AgentOutput, include_raw=True)
-			response: dict[str, Any] = await structured_llm.ainvoke(input_messages)  # type: ignore
-			parsed: AgentOutput | None = response['parsed']
-		else:
-			structured_llm = self.llm.with_structured_output(self.AgentOutput, include_raw=True, method=self.tool_calling_method)
-			response: dict[str, Any] = await structured_llm.ainvoke(input_messages)  # type: ignore
-			parsed: AgentOutput | None = response['parsed']
+			elif self.tool_calling_method is None:
+				structured_llm = self.llm.with_structured_output(self.AgentOutput, include_raw=True)
+				response: dict[str, Any] = await structured_llm.ainvoke(input_messages)  # type: ignore
+				parsed: AgentOutput | None = response['parsed']
+			else:
+				structured_llm = self.llm.with_structured_output(self.AgentOutput, include_raw=True, method=self.tool_calling_method)
+				response: dict[str, Any] = await structured_llm.ainvoke(input_messages)  # type: ignore
+				parsed: AgentOutput | None = response['parsed']
+		finally:
+			llm_end_time = time.time()
+			llm_duration = llm_end_time - llm_start_time
+			logger.info(f"[llm] LLM inference time: {llm_duration:.4f}s with {input_token_count} input tokens")
 
 		if parsed is None:
 			raise ValueError('Could not parse response.')
@@ -536,6 +544,10 @@ class Agent(Generic[Context]):
 		if len(parsed.action) > self.settings.max_actions_per_step:
 			parsed.action = parsed.action[: self.settings.max_actions_per_step]
 
+		end_time = time.time()
+		total_duration = end_time - start_time
+		logger.info(f"[llm] Total get_next_action time: {total_duration:.4f}s (LLM: {llm_duration:.4f}s, {(llm_duration/total_duration)*100:.1f}%)")
+		
 		log_response(parsed)
 
 		return parsed
@@ -623,7 +635,17 @@ class Agent(Generic[Context]):
 		finally:
 			# Print overall performance statistics at the end of agent run
 			logger.info("===== FINAL PERFORMANCE SUMMARY =====")
-			print_timing_summary()
+			# Add LLM performance summary
+			from browser_use.utils import print_timing_summary
+			logger.info("--- LLM PERFORMANCE ---")
+			logger.info(f"Agent steps completed: {self.state.n_steps}")
+			logger.info(f"Total tokens processed: {self.state.history.total_input_tokens() if self.state.history else 0}")
+			logger.info(f"Total agent duration: {self.state.history.total_duration_seconds() if self.state.history else 0:.2f}s")
+			print_timing_summary(logger_name='agent')
+			logger.info("--- BROWSER PERFORMANCE ---")
+			print_timing_summary(logger_name='browser')
+			logger.info("--- DOM PERFORMANCE ---")
+			print_timing_summary(logger_name='dom')
 			logger.info("====================================")
 			
 			self.telemetry.capture(
@@ -661,13 +683,18 @@ class Agent(Generic[Context]):
 	) -> list[ActionResult]:
 		"""Execute multiple actions"""
 		results = []
+		start_time = time.time()
 
 		cached_selector_map = await self.browser_context.get_selector_map()
 		cached_path_hashes = set(e.hash.branch_path_hash for e in cached_selector_map.values())
-
+		selector_time = time.time() - start_time
+		
 		await self.browser_context.remove_highlights()
+		highlight_time = time.time() - start_time - selector_time
 
 		for i, action in enumerate(actions):
+			action_start_time = time.time()
+			
 			if action.get_index() is not None and i != 0:
 				new_state = await self.browser_context.get_state()
 				new_path_hashes = set(e.hash.branch_path_hash for e in new_state.selector_map.values())
@@ -680,6 +707,7 @@ class Agent(Generic[Context]):
 
 			await self._raise_if_stopped_or_paused()
 
+			controller_start = time.time()
 			result = await self.controller.act(
 				action,
 				self.browser_context,
@@ -688,8 +716,15 @@ class Agent(Generic[Context]):
 				self.settings.available_file_paths,
 				context=self.context,
 			)
+			controller_time = time.time() - controller_start
 
 			results.append(result)
+
+			action_end_time = time.time()
+			action_duration = action_end_time - action_start_time
+			if action_duration > 0.5:  # Only log slower actions
+				action_name = next(iter(action.model_dump(exclude_unset=True, exclude_defaults=True).keys()), "unknown")
+				logger.info(f"[action] {action_name} took {action_duration:.4f}s (controller: {controller_time:.4f}s)")
 
 			logger.debug(f'Executed action {i + 1} / {len(actions)}')
 			if results[-1].is_done or results[-1].error or i == len(actions) - 1:
@@ -698,6 +733,10 @@ class Agent(Generic[Context]):
 			await asyncio.sleep(self.browser_context.config.wait_between_actions)
 			# hash all elements. if it is a subset of cached_state its fine - else break (new elements on page)
 
+		total_time = time.time() - start_time
+		if len(actions) > 0:
+			logger.info(f"[actions] Executed {len(results)}/{len(actions)} actions in {total_time:.4f}s")
+		
 		return results
 
 	async def _validate_output(self) -> bool:
