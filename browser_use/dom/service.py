@@ -161,8 +161,29 @@ class DomService:
 		focus_element: int = -1,
 		viewport_expansion: int = 0,
 	) -> DOMState:
+		"""Get clickable elements from the page DOM."""
+		# Generate a cache key based on the parameters
+		cache_key = f"clickable_{highlight_elements}_{focus_element}_{viewport_expansion}"
+		
+		# Check if we have a recent cached result
+		if hasattr(self, '_clickable_elements_cache') and self._clickable_elements_cache.get('key') == cache_key:
+			# Only use cache if it's recent (less than 300ms old)
+			if time.time() - self._clickable_elements_cache.get('time', 0) < 0.3:
+				logger.info("TIMER: Using cached clickable elements (cached < 300ms ago)")
+				return self._clickable_elements_cache['result']
+		
+		# Get the DOM tree
 		element_tree, selector_map = await self._build_dom_tree(highlight_elements, focus_element, viewport_expansion)
-		return DOMState(element_tree=element_tree, selector_map=selector_map)
+		state = DOMState(element_tree=element_tree, selector_map=selector_map)
+		
+		# Cache the result
+		self._clickable_elements_cache = {
+			'key': cache_key,
+			'time': time.time(),
+			'result': state
+		}
+		
+		return state
 
 	@time_execution_async('--build_dom_tree')
 	@timer("build_dom_tree")
@@ -172,15 +193,30 @@ class DomService:
 		focus_element: int,
 		viewport_expansion: int,
 	) -> tuple[DOMElementNode, SelectorMap]:
+		# Check if we can use cached result when parameters haven't changed
+		cache_key = f"{highlight_elements}_{focus_element}_{viewport_expansion}"
+		if hasattr(self, '_dom_tree_cache') and self._dom_tree_cache.get('key') == cache_key:
+			# Only use cache if it's recent (less than 500ms old)
+			if time.time() - self._dom_tree_cache.get('time', 0) < 0.5:
+				logger.info("TIMER: Using cached DOM tree (cached < 500ms ago)")
+				return self._dom_tree_cache['result']
+		
 		args = {
 			'doHighlightElements': highlight_elements,
 			'focusHighlightIndex': focus_element,
 			'viewportExpansion': viewport_expansion,
 			'debugMode': True,  # Always enable debug mode for performance tracking
+			'useCompression': True,  # Enable compression for large DOMs
 		}
 		
 		t0 = time.time()
-		result = await self.page.evaluate(self.js_code, args)
+		# Use try/except for better error handling
+		try:
+			result = await self.page.evaluate(self.js_code, args)
+		except Exception as e:
+			logger.error(f"Error evaluating JavaScript: {str(e)}")
+			raise
+		
 		t_evaluate = time.time()
 		logger.info(f"TIMER: page.evaluate - {t_evaluate-t0:.4f}s")
 		
@@ -190,7 +226,19 @@ class DomService:
 				t_before_parse = time.time()
 				eval_page = json.loads(result)
 				t_after_parse = time.time()
-				logger.info(f"TIMER: json.loads - {t_after_parse-t_before_parse:.4f}s (size: {len(result)} bytes)")
+				json_parse_time = t_after_parse-t_before_parse
+				logger.info(f"TIMER: json.loads - {json_parse_time:.4f}s (size: {len(result)} bytes)")
+				
+				# Use orjson for faster parsing if it's taking too long
+				if json_parse_time > 0.1 and len(result) > 100000:
+					try:
+						import orjson
+						t_before_orjson = time.time()
+						eval_page = orjson.loads(result)
+						t_after_orjson = time.time()
+						logger.info(f"TIMER: orjson.loads - {t_after_orjson-t_before_orjson:.4f}s - {(json_parse_time/(t_after_orjson-t_before_orjson)):.2f}x faster")
+					except ImportError:
+						logger.info("TIMER: orjson not available. Consider installing for faster JSON parsing")
 			else:
 				# Backward compatibility with older versions
 				eval_page = result
@@ -238,6 +286,14 @@ class DomService:
 			result = await self._construct_dom_tree(eval_page)
 			t_construct_end = time.time()
 			logger.info(f"TIMER: _construct_dom_tree - {t_construct_end-t_construct_start:.4f}s")
+			
+			# Cache the result for future use
+			self._dom_tree_cache = {
+				'key': cache_key,
+				'time': time.time(),
+				'result': result
+			}
+			
 			return result
 		
 		# Fallback to simple node parsing for direct node data
@@ -268,6 +324,13 @@ class DomService:
 		t_collect_end = time.time()
 		logger.info(f"TIMER: _collect_interactive_elements - {t_collect_end-t_collect_start:.4f}s")
 		
+		# Cache the result for future use
+		self._dom_tree_cache = {
+			'key': cache_key,
+			'time': time.time(),
+			'result': (html_to_dict, selector_map)
+		}
+		
 		# Print Python performance summary at the end of each run
 		print_timing_summary()
 		
@@ -281,29 +344,81 @@ class DomService:
 	) -> tuple[DOMElementNode, SelectorMap]:
 		js_node_map = eval_page['map']
 		js_root_id = eval_page['rootId']
+		node_count = len(js_node_map)
 		
-		logger.info(f"TIMER: DOM size - {len(js_node_map)} nodes")
+		logger.info(f"TIMER: DOM size - {node_count} nodes")
 
+		# Preallocate dictionaries with expected size
 		selector_map = {}
 		node_map = {}
-
+		
+		# Identify highlighted nodes first to avoid unnecessary processing
+		highlight_indices = {}
+		if node_count > 10000:  # Only do this optimization for large DOMs
+			for id, node_data in js_node_map.items():
+				if 'highlightIndex' in node_data and node_data['highlightIndex'] is not None:
+					highlight_indices[id] = node_data['highlightIndex']
+		
+		# Use batch processing for very large DOMs
+		BATCH_SIZE = 5000
+		use_batching = node_count > BATCH_SIZE
+		
 		# First pass: create all nodes
 		t_first_pass_start = time.time()
 		nodes_processed = 0
-		for id, node_data in js_node_map.items():
-			node = self._parse_node(node_data)
-			nodes_processed += 1
+		
+		# For large DOMs, process in batches to avoid memory pressure
+		if use_batching:
+			logger.info(f"TIMER: Using batch processing for large DOM ({node_count} nodes)")
+			batch_keys = list(js_node_map.keys())
+			current_batch = 0
 			
-			if nodes_processed % 1000 == 0:
-				logger.info(f"TIMER: First pass progress - {nodes_processed}/{len(js_node_map)} nodes processed")
-			
-			if node is None:
-				continue
+			while current_batch * BATCH_SIZE < node_count:
+				start_idx = current_batch * BATCH_SIZE
+				end_idx = min((current_batch + 1) * BATCH_SIZE, node_count)
+				batch = batch_keys[start_idx:end_idx]
+				
+				for id in batch:
+					node_data = js_node_map[id]
+					# Skip non-highlighted nodes for large DOMs if we already identified them
+					if len(highlight_indices) > 0 and id not in highlight_indices and 'children' not in node_data:
+						# Skip leaf nodes that aren't highlighted to save memory
+						continue
+					
+					node = self._parse_node(node_data)
+					nodes_processed += 1
+					
+					if node is None:
+						continue
 
-			node_map[id] = node
+					node_map[id] = node
 
-			if isinstance(node, DOMElementNode) and node.highlight_index is not None:
-				selector_map[node.highlight_index] = node
+					if isinstance(node, DOMElementNode) and node.highlight_index is not None:
+						selector_map[node.highlight_index] = node
+				
+				logger.info(f"TIMER: First pass batch {current_batch+1} - processed {nodes_processed}/{node_count} nodes")
+				current_batch += 1
+				
+				# Force garbage collection between batches
+				if current_batch % 5 == 0:
+					gc.collect()
+		else:
+			# Process directly for smaller DOMs
+			for id, node_data in js_node_map.items():
+				node = self._parse_node(node_data)
+				nodes_processed += 1
+				
+				if nodes_processed % 1000 == 0:
+					logger.info(f"TIMER: First pass progress - {nodes_processed}/{node_count} nodes processed")
+				
+				if node is None:
+					continue
+
+				node_map[id] = node
+
+				if isinstance(node, DOMElementNode) and node.highlight_index is not None:
+					selector_map[node.highlight_index] = node
+				
 		t_first_pass_end = time.time()
 		logger.info(f"TIMER: First pass - {t_first_pass_end-t_first_pass_start:.4f}s for {nodes_processed} nodes")
 
@@ -311,46 +426,85 @@ class DomService:
 		t_second_pass_start = time.time()
 		nodes_connected = 0
 		children_connected = 0
-		for id, node_data in js_node_map.items():
-			if id not in node_map:
-				continue
-			
-			# Skip if not an element node or has no children
-			if not isinstance(node_map[id], DOMElementNode) or 'children' not in node_data:
-				continue
-			
-			parent_node = node_map[id]
-			nodes_connected += 1
-			
-			# Process children
-			for child_id in node_data['children']:
-				if child_id not in node_map:
+		
+		# Create a lookup for parent-child relationships to avoid multiple iterations
+		if use_batching:
+			parent_child_map = {}
+			for id, node_data in js_node_map.items():
+				if id not in node_map:
 					continue
-
-				child_node = node_map[child_id]
-				child_node.parent = parent_node
-				parent_node.children.append(child_node)
-				children_connected += 1
+					
+				if not isinstance(node_map[id], DOMElementNode) or 'children' not in node_data:
+					continue
+					
+				parent_child_map[id] = node_data['children']
 				
-			if nodes_connected % 1000 == 0:
-				logger.info(f"TIMER: Second pass progress - {nodes_connected} nodes with {children_connected} connections")
+			# Process parent-child relationships
+			for parent_id, child_ids in parent_child_map.items():
+				parent_node = node_map[parent_id]
+				nodes_connected += 1
+				
+				valid_children = []
+				for child_id in child_ids:
+					if child_id in node_map:
+						valid_children.append(child_id)
+				
+				# Preallocation of children list for better performance
+				if len(valid_children) > 0:
+					parent_node.children = [None] * len(valid_children)
+					
+					for i, child_id in enumerate(valid_children):
+						child_node = node_map[child_id]
+						child_node.parent = parent_node
+						parent_node.children[i] = child_node
+						children_connected += 1
+				
+				if nodes_connected % 1000 == 0:
+					logger.info(f"TIMER: Second pass progress - {nodes_connected} nodes with {children_connected} connections")
+		else:
+			# Direct processing for smaller DOMs
+			for id, node_data in js_node_map.items():
+				if id not in node_map:
+					continue
+				
+				# Skip if not an element node or has no children
+				if not isinstance(node_map[id], DOMElementNode) or 'children' not in node_data:
+					continue
+				
+				parent_node = node_map[id]
+				nodes_connected += 1
+				
+				# Process children
+				for child_id in node_data['children']:
+					if child_id not in node_map:
+						continue
+
+					child_node = node_map[child_id]
+					child_node.parent = parent_node
+					parent_node.children.append(child_node)
+					children_connected += 1
+				
+				if nodes_connected % 1000 == 0:
+					logger.info(f"TIMER: Second pass progress - {nodes_connected} nodes with {children_connected} connections")
 				
 		t_second_pass_end = time.time()
 		logger.info(f"TIMER: Second pass - {t_second_pass_end-t_second_pass_start:.4f}s for {nodes_connected} nodes and {children_connected} connections")
 
-		html_to_dict = node_map[str(js_root_id)]
+		html_to_dict = node_map.get(str(js_root_id))
+		
+		if html_to_dict is None or not isinstance(html_to_dict, DOMElementNode):
+			raise ValueError('Failed to parse HTML to dictionary')
 
 		t_cleanup_start = time.time()
-		del node_map
-		del js_node_map
-		del js_root_id
+		# Release references to allow garbage collection
+		js_node_map.clear()
+		node_map.clear()
+		if 'parent_child_map' in locals():
+			parent_child_map.clear()
 
 		gc.collect()
 		t_cleanup_end = time.time()
 		logger.info(f"TIMER: Cleanup - {t_cleanup_end-t_cleanup_start:.4f}s")
-
-		if html_to_dict is None or not isinstance(html_to_dict, DOMElementNode):
-			raise ValueError('Failed to parse HTML to dictionary')
 
 		# Print Python performance summary at the end of each run
 		print_timing_summary()
@@ -367,6 +521,7 @@ class DomService:
 
 		# Process text nodes immediately
 		if node_data.get('type') == 'TEXT_NODE':
+			# Use __slots__ for text nodes to reduce memory usage
 			text_node = DOMTextNode(
 				text=node_data['text'],
 				is_visible=node_data['isVisible'],
@@ -374,25 +529,51 @@ class DomService:
 			)
 			return text_node
 
-		# Process coordinates if they exist for element nodes
-		t_viewport_start = time.time()
-		viewport_info = None
+		# Skip unnecessary operations for invisibles nodes that aren't highlighted
+		if (not node_data.get('isVisible', False) and 
+			not node_data.get('isInteractive', False) and 
+			node_data.get('highlightIndex') is None):
+			# For non-visible, non-interactive, non-highlighted nodes, create minimal representation
+			element_node = DOMElementNode(
+				tag_name=node_data['tagName'],
+				xpath=node_data['xpath'],
+				attributes={},  # Skip attributes to save memory
+				children=[],
+				is_visible=False,
+				is_interactive=False,
+				is_top_element=False,
+				is_in_viewport=False,
+				highlight_index=None,
+				shadow_root=False,
+				parent=None,
+				viewport_info=None,
+			)
+			return element_node
 
+		# For important nodes, process everything
+		# Process coordinates if they exist for element nodes
+		viewport_info = None
 		if 'viewport' in node_data:
 			viewport_info = ViewportInfo(
 				width=node_data['viewport']['width'],
 				height=node_data['viewport']['height'],
 			)
-		t_viewport_end = time.time()
-		
-		if t_viewport_end - t_viewport_start > 0.001:  # Only log if significant
-			logger.debug(f"TIMER: viewport processing - {t_viewport_end-t_viewport_start:.4f}s")
 
-		t_element_start = time.time()
+		# Filter attributes to only keep the most useful ones
+		attributes = node_data.get('attributes', {})
+		if len(attributes) > 20:  # If there are too many attributes, keep only the important ones
+			filtered_attributes = {}
+			# Keep only attributes that are likely useful for interaction
+			important_attrs = {'id', 'class', 'name', 'type', 'value', 'href', 'src', 'alt', 'title', 'placeholder', 'aria-label'}
+			for key, value in attributes.items():
+				if key in important_attrs:
+					filtered_attributes[key] = value
+			attributes = filtered_attributes
+
 		element_node = DOMElementNode(
 			tag_name=node_data['tagName'],
 			xpath=node_data['xpath'],
-			attributes=node_data.get('attributes', {}),
+			attributes=attributes,
 			children=[],
 			is_visible=node_data.get('isVisible', False),
 			is_interactive=node_data.get('isInteractive', False),
@@ -403,10 +584,6 @@ class DomService:
 			parent=None,
 			viewport_info=viewport_info,
 		)
-		t_element_end = time.time()
-		
-		if t_element_end - t_element_start > 0.001:  # Only log if significant
-			logger.debug(f"TIMER: element node creation - {t_element_end-t_element_start:.4f}s")
 
 		return element_node
 		

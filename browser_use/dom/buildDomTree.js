@@ -4,9 +4,10 @@
     focusHighlightIndex: -1,
     viewportExpansion: 0,
     debugMode: false,
+    useCompression: false,
   }
 ) => {
-  const { doHighlightElements, focusHighlightIndex, viewportExpansion, debugMode } = args;
+  const { doHighlightElements, focusHighlightIndex, viewportExpansion, debugMode, useCompression } = args;
   let highlightIndex = 0; // Reset highlight index
 
   // Performance tracking - always enabled regardless of debugMode
@@ -1200,13 +1201,130 @@
     }
   }
 
-  // Return the stringified JSON with performance data
-  return JSON.stringify({
-    rootId, 
+  // Prepare final result
+  const finalResult = {
     map: DOM_HASH_MAP,
-    perfMetrics: debugMode ? PERF_METRICS : null,
-    perfSummary
-  });
+    rootId: rootId
+  };
+  
+  if (Object.keys(PERF_TIMERS.sections).length > 0) {
+    startTimer("performance_summary");
+    let totalTime = performance.now() - PERF_TIMERS.start;
+    
+    // Calculate percentages for each section
+    for (const section in PERF_TIMERS.sections) {
+      PERF_TIMERS.sections[section].percentage = 
+        ((PERF_TIMERS.sections[section].totalTime / totalTime) * 100).toFixed(2);
+    }
+    
+    // Calculate percentages for each operation
+    for (const op in PERF_TIMERS.operations) {
+      if (PERF_TIMERS.operations[op].calls > 0) {
+        PERF_TIMERS.operations[op].percentage = 
+          ((PERF_TIMERS.operations[op].totalTime / totalTime) * 100).toFixed(2);
+        PERF_TIMERS.operations[op].avgTimeMs = 
+          (PERF_TIMERS.operations[op].totalTime / PERF_TIMERS.operations[op].calls).toFixed(2);
+      }
+    }
+    
+    finalResult.perfSummary = {
+      totalTimeMs: totalTime.toFixed(2),
+      nodeCount: Object.keys(DOM_HASH_MAP).length,
+      sections: PERF_TIMERS.sections,
+      operations: PERF_TIMERS.operations,
+      logs: PERF_TIMERS.logs
+    };
+    endTimer("performance_summary");
+  }
+  
+  // Use compression for large DOMs if requested
+  if (useCompression && Object.keys(DOM_HASH_MAP).length > 5000) {
+    startTimer("compression");
+    // Count total nodes for logging
+    const nodeCount = Object.keys(DOM_HASH_MAP).length;
+    
+    // Simplify the node map to reduce size
+    const simplifiedMap = {};
+    for (const [id, node] of Object.entries(DOM_HASH_MAP)) {
+      // Skip nodes that aren't interactive or visible if we have many nodes
+      if (nodeCount > 10000 && !node.isInteractive && !node.isVisible && node.highlightIndex === undefined) {
+        continue;
+      }
+      
+      // Create a simplified node with only essential properties
+      const simplifiedNode = {
+        tagName: node.tagName,
+        xpath: node.xpath
+      };
+      
+      // Only include properties that are true or non-empty
+      if (node.isVisible) simplifiedNode.isVisible = true;
+      if (node.isInteractive) simplifiedNode.isInteractive = true;
+      if (node.isTopElement) simplifiedNode.isTopElement = true;
+      if (node.isInViewport) simplifiedNode.isInViewport = true;
+      if (node.highlightIndex !== undefined) simplifiedNode.highlightIndex = node.highlightIndex;
+      if (node.shadowRoot) simplifiedNode.shadowRoot = true;
+      if (node.type) simplifiedNode.type = node.type;
+      if (node.text) simplifiedNode.text = node.text;
+      if (node.children && node.children.length > 0) simplifiedNode.children = node.children;
+      
+      // Only include non-empty attributes
+      if (node.attributes && Object.keys(node.attributes).length > 0) {
+        // For very large DOMs, only keep the most important attributes
+        if (nodeCount > 20000) {
+          const importantAttrs = ['id', 'class', 'name', 'type', 'value', 'href', 'src', 'alt', 'title', 'placeholder', 'aria-label'];
+          simplifiedNode.attributes = {};
+          for (const attr of importantAttrs) {
+            if (node.attributes[attr]) {
+              simplifiedNode.attributes[attr] = node.attributes[attr];
+            }
+          }
+          // Only include attributes object if it has properties
+          if (Object.keys(simplifiedNode.attributes).length === 0) {
+            delete simplifiedNode.attributes;
+          }
+        } else {
+          simplifiedNode.attributes = node.attributes;
+        }
+      }
+      
+      // Include viewport info only if it exists
+      if (node.viewport) {
+        simplifiedNode.viewport = node.viewport;
+      }
+      
+      simplifiedMap[id] = simplifiedNode;
+    }
+    
+    const compressedResult = {
+      map: simplifiedMap,
+      rootId: rootId
+    };
+    
+    // Copy performance data if it exists
+    if (finalResult.perfSummary) {
+      compressedResult.perfSummary = finalResult.perfSummary;
+      
+      // Add compression stats to performance summary
+      const originalSize = JSON.stringify(finalResult).length;
+      const compressedSize = JSON.stringify(compressedResult).length;
+      const compressionRatio = ((originalSize - compressedSize) / originalSize * 100).toFixed(2);
+      
+      compressedResult.perfSummary.compression = {
+        originalSizeBytes: originalSize,
+        compressedSizeBytes: compressedSize,
+        compressionRatio: compressionRatio
+      };
+      
+      compressedResult.perfSummary.logs.push(`Compression: ${compressionRatio}% reduction (${originalSize} → ${compressedSize} bytes)`);
+    }
+    
+    endTimer("compression");
+    return JSON.stringify(compressedResult);
+  }
+  
+  // Return JSON string for consistent format
+  return JSON.stringify(finalResult);
 };
 
 // In JavaScript, implement chunk processing
