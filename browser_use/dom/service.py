@@ -66,7 +66,7 @@ class DomService:
 		}
 
 		try:
-			eval_page = json.loads(await self.page.evaluate(self.js_code, args))
+			eval_page = await self.page.evaluate(self.js_code, args)
 		except Exception as e:
 			logger.error('Error evaluating JavaScript: %s', e)
 			raise
