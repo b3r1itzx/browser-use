@@ -994,7 +994,7 @@
   isTextNodeVisible = measureTime(isTextNodeVisible);
   getEffectiveScroll = measureTime(getEffectiveScroll);
 
-  const rootId = JSON.stringify(buildDomTree(document.body));
+  const rootId = buildDomTree(document.body);
 
   // Clear the cache before starting
   DOM_CACHE.clearCache();
@@ -1051,5 +1051,5 @@
 
   return debugMode ?
     { rootId, map: DOM_HASH_MAP, perfMetrics: PERF_METRICS } :
-    rootId;
+    { rootId, map: DOM_HASH_MAP };
 };
