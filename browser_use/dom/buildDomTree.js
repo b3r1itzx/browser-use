@@ -1213,17 +1213,18 @@
     
     // Calculate percentages for each section
     for (const section in PERF_TIMERS.sections) {
-      PERF_TIMERS.sections[section].percentage = 
-        ((PERF_TIMERS.sections[section].totalTime / totalTime) * 100).toFixed(2);
+      const sectionData = PERF_TIMERS.sections[section];
+      sectionData.percentage = ((sectionData.totalTime / totalTime) * 100).toFixed(2);
+      sectionData.timeMs = sectionData.totalTime.toFixed(2);
     }
     
     // Calculate percentages for each operation
     for (const op in PERF_TIMERS.operations) {
-      if (PERF_TIMERS.operations[op].calls > 0) {
-        PERF_TIMERS.operations[op].percentage = 
-          ((PERF_TIMERS.operations[op].totalTime / totalTime) * 100).toFixed(2);
-        PERF_TIMERS.operations[op].avgTimeMs = 
-          (PERF_TIMERS.operations[op].totalTime / PERF_TIMERS.operations[op].calls).toFixed(2);
+      const opData = PERF_TIMERS.operations[op];
+      if (opData.calls > 0) {
+        opData.percentage = ((opData.totalTime / totalTime) * 100).toFixed(2);
+        opData.timeMs = opData.totalTime.toFixed(2);
+        opData.avgTimeMs = (opData.totalTime / opData.calls).toFixed(2);
       }
     }
     
@@ -1303,23 +1304,26 @@
     
     // Copy performance data if it exists
     if (finalResult.perfSummary) {
-      compressedResult.perfSummary = finalResult.perfSummary;
+      compressedResult.perfSummary = JSON.parse(JSON.stringify(finalResult.perfSummary));
       
       // Add compression stats to performance summary
       const originalSize = JSON.stringify(finalResult).length;
       const compressedSize = JSON.stringify(compressedResult).length;
       const compressionRatio = ((originalSize - compressedSize) / originalSize * 100).toFixed(2);
       
+      const compressionTime = endTimer("compression");
       compressedResult.perfSummary.compression = {
         originalSizeBytes: originalSize,
         compressedSizeBytes: compressedSize,
-        compressionRatio: compressionRatio
+        compressionRatio: compressionRatio,
+        timeMs: compressionTime.toFixed(2)
       };
       
       compressedResult.perfSummary.logs.push(`Compression: ${compressionRatio}% reduction (${originalSize} → ${compressedSize} bytes)`);
+    } else {
+      endTimer("compression");
     }
     
-    endTimer("compression");
     return JSON.stringify(compressedResult);
   }
   
