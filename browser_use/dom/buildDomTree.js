@@ -1050,6 +1050,6 @@
   }
 
   return debugMode ?
-    { rootId, map: DOM_HASH_MAP, perfMetrics: PERF_METRICS } :
+    { null, null } :
     { null, null };
 };
