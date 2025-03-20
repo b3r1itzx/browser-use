@@ -523,8 +523,8 @@ class DomService:
 		if node_data.get('type') == 'TEXT_NODE':
 			# Use __slots__ for text nodes to reduce memory usage
 			text_node = DOMTextNode(
-				text=node_data['text'],
-				is_visible=node_data['isVisible'],
+				text=node_data.get('text', ''),
+				is_visible=node_data.get('isVisible', False),
 				parent=None,
 			)
 			return text_node
@@ -535,8 +535,8 @@ class DomService:
 			node_data.get('highlightIndex') is None):
 			# For non-visible, non-interactive, non-highlighted nodes, create minimal representation
 			element_node = DOMElementNode(
-				tag_name=node_data['tagName'],
-				xpath=node_data['xpath'],
+				tag_name=node_data.get('tagName', 'div'),
+				xpath=node_data.get('xpath', ''),
 				attributes={},  # Skip attributes to save memory
 				children=[],
 				is_visible=False,
@@ -555,8 +555,8 @@ class DomService:
 		viewport_info = None
 		if 'viewport' in node_data:
 			viewport_info = ViewportInfo(
-				width=node_data['viewport']['width'],
-				height=node_data['viewport']['height'],
+				width=node_data['viewport'].get('width', 0),
+				height=node_data['viewport'].get('height', 0),
 			)
 
 		# Filter attributes to only keep the most useful ones
@@ -571,8 +571,8 @@ class DomService:
 			attributes = filtered_attributes
 
 		element_node = DOMElementNode(
-			tag_name=node_data['tagName'],
-			xpath=node_data['xpath'],
+			tag_name=node_data.get('tagName', 'div'),
+			xpath=node_data.get('xpath', ''),
 			attributes=attributes,
 			children=[],
 			is_visible=node_data.get('isVisible', False),

@@ -1279,46 +1279,66 @@
         continue;
       }
       
-      // Create a simplified node with only essential properties
-      const simplifiedNode = {
-        tagName: node.tagName,
-        xpath: node.xpath
-      };
+      // Create a simplified node
+      let simplifiedNode = {};
       
-      // Only include properties that are true or non-empty
-      if (node.isVisible) simplifiedNode.isVisible = true;
-      if (node.isInteractive) simplifiedNode.isInteractive = true;
-      if (node.isTopElement) simplifiedNode.isTopElement = true;
-      if (node.isInViewport) simplifiedNode.isInViewport = true;
-      if (node.highlightIndex !== undefined) simplifiedNode.highlightIndex = node.highlightIndex;
-      if (node.shadowRoot) simplifiedNode.shadowRoot = true;
-      if (node.type) simplifiedNode.type = node.type;
-      if (node.text) simplifiedNode.text = node.text;
-      if (node.children && node.children.length > 0) simplifiedNode.children = node.children;
-      
-      // Only include non-empty attributes
-      if (node.attributes && Object.keys(node.attributes).length > 0) {
-        // For very large DOMs, only keep the most important attributes
-        if (nodeCount > 20000) {
-          const importantAttrs = ['id', 'class', 'name', 'type', 'value', 'href', 'src', 'alt', 'title', 'placeholder', 'aria-label'];
-          simplifiedNode.attributes = {};
-          for (const attr of importantAttrs) {
-            if (node.attributes[attr]) {
-              simplifiedNode.attributes[attr] = node.attributes[attr];
-            }
-          }
-          // Only include attributes object if it has properties
-          if (Object.keys(simplifiedNode.attributes).length === 0) {
-            delete simplifiedNode.attributes;
-          }
-        } else {
-          simplifiedNode.attributes = node.attributes;
+      // Handle text nodes differently from element nodes
+      if (node.type === "TEXT_NODE") {
+        simplifiedNode = {
+          type: "TEXT_NODE",
+          text: node.text,
+          isVisible: node.isVisible || false  // Always include isVisible with default value
+        };
+      } else {
+        // For element nodes
+        simplifiedNode = {
+          tagName: node.tagName,
+          xpath: node.xpath,
+          isVisible: node.isVisible || false,  // Always include isVisible with default value
+          isInteractive: node.isInteractive || false,  // Always include core properties
+          isTopElement: node.isTopElement || false,
+          isInViewport: node.isInViewport || false
+        };
+        
+        // Include children if present
+        if (node.children && node.children.length > 0) {
+          simplifiedNode.children = node.children;
         }
-      }
-      
-      // Include viewport info only if it exists
-      if (node.viewport) {
-        simplifiedNode.viewport = node.viewport;
+        
+        // Include highlight index if present
+        if (node.highlightIndex !== undefined) {
+          simplifiedNode.highlightIndex = node.highlightIndex;
+        }
+        
+        // Include shadow root if true
+        if (node.shadowRoot) {
+          simplifiedNode.shadowRoot = true;
+        }
+        
+        // Include non-empty attributes
+        if (node.attributes && Object.keys(node.attributes).length > 0) {
+          // For very large DOMs, only keep the most important attributes
+          if (nodeCount > 20000) {
+            const importantAttrs = ['id', 'class', 'name', 'type', 'value', 'href', 'src', 'alt', 'title', 'placeholder', 'aria-label'];
+            simplifiedNode.attributes = {};
+            for (const attr of importantAttrs) {
+              if (node.attributes[attr]) {
+                simplifiedNode.attributes[attr] = node.attributes[attr];
+              }
+            }
+            // Only include attributes object if it has properties
+            if (Object.keys(simplifiedNode.attributes).length === 0) {
+              delete simplifiedNode.attributes;
+            }
+          } else {
+            simplifiedNode.attributes = node.attributes;
+          }
+        }
+        
+        // Include viewport info only if it exists
+        if (node.viewport) {
+          simplifiedNode.viewport = node.viewport;
+        }
       }
       
       simplifiedMap[id] = simplifiedNode;
