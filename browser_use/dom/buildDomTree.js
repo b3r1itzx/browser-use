@@ -994,7 +994,7 @@
   isTextNodeVisible = measureTime(isTextNodeVisible);
   getEffectiveScroll = measureTime(getEffectiveScroll);
 
-  const rootId = buildDomTree(document.body);
+  const rootId = JSON.stringify(buildDomTree(document.body));
 
   // Clear the cache before starting
   DOM_CACHE.clearCache();
