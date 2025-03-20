@@ -24,8 +24,16 @@ def time_execution_sync(additional_text: str = '') -> Callable[[Callable[P, R]],
 			result = func(*args, **kwargs)
 			execution_time = time.time() - start_time
 			
-			# Store timing data
+			# Store timing data with proper module prefix
 			key = additional_text.strip('-').strip() if additional_text else func.__name__
+			if '(' in key and ')' in key:
+				# Extract module name from the format "--operation (module)"
+				parts = key.split('(')
+				if len(parts) > 1:
+					module = parts[1].strip(')')
+					operation = parts[0].strip('-').strip()
+					key = f"{module}.{operation}"
+			
 			if key not in _TIMING_DATA:
 				_TIMING_DATA[key] = []
 				_TIMING_CALLS[key] = 0
@@ -55,8 +63,16 @@ def time_execution_async(
 			result = await func(*args, **kwargs)
 			execution_time = time.time() - start_time
 			
-			# Store timing data
+			# Store timing data with proper module prefix
 			key = additional_text.strip('-').strip() if additional_text else func.__name__
+			if '(' in key and ')' in key:
+				# Extract module name from the format "--operation (module)"
+				parts = key.split('(')
+				if len(parts) > 1:
+					module = parts[1].strip(')')
+					operation = parts[0].strip('-').strip()
+					key = f"{module}.{operation}"
+			
 			if key not in _TIMING_DATA:
 				_TIMING_DATA[key] = []
 				_TIMING_CALLS[key] = 0
@@ -86,6 +102,12 @@ def print_timing_summary(logger_name: Optional[str] = None):
     custom_logger = logging.getLogger(logger_name) if logger_name else logger
     custom_logger.info("===== TIMING SUMMARY =====")
     
+    # Log all tracked operations to help with debugging
+    if len(_TIMING_DATA) == 0:
+        custom_logger.info("No timing data collected yet")
+    else:
+        custom_logger.info(f"All tracked operations: {list(_TIMING_DATA.keys())}")
+    
     # Sort by total time spent (descending)
     sorted_operations = sorted(
         _TIMING_DATA.keys(),
@@ -95,7 +117,9 @@ def print_timing_summary(logger_name: Optional[str] = None):
     
     filtered_operations = sorted_operations
     if logger_name:
-        filtered_operations = [op for op in sorted_operations if op.startswith(logger_name)]
+        # Debug the filtering process
+        custom_logger.info(f"Filtering for prefix '{logger_name}' from {len(sorted_operations)} operations")
+        filtered_operations = [op for op in sorted_operations if logger_name.lower() in op.lower()]
     
     for op in filtered_operations:
         times = _TIMING_DATA[op]

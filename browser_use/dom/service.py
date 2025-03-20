@@ -90,11 +90,28 @@ def print_timing_summary():
     # Sort by total time descending
     sorted_timers = sorted(TIMERS["total_time"].items(), key=lambda x: x[1], reverse=True)
     
+    # Copy timing data to the utils timing system
+    from browser_use.utils import _TIMING_DATA, _TIMING_CALLS, _TIMING_MAX, _TIMING_MIN
     for name, total in sorted_timers:
+        dom_key = f"dom.{name}"
         calls = TIMERS["call_count"][name]
         avg = total / calls
         max_time = TIMERS["max_time"][name]
         min_time = TIMERS["min_time"][name]
+        
+        # Store in the utils system
+        if dom_key not in _TIMING_DATA:
+            _TIMING_DATA[dom_key] = []
+            _TIMING_CALLS[dom_key] = calls
+            _TIMING_MAX[dom_key] = max_time
+            _TIMING_MIN[dom_key] = min_time
+        else:
+            _TIMING_CALLS[dom_key] = calls
+            _TIMING_MAX[dom_key] = max(_TIMING_MAX[dom_key], max_time)
+            _TIMING_MIN[dom_key] = min(_TIMING_MIN[dom_key], min_time)
+        
+        # Add the total time as a single entry
+        _TIMING_DATA[dom_key] = [total]
         
         logger.info(f"{name}: total={total:.4f}s calls={calls} avg={avg:.4f}s max={max_time:.4f}s min={min_time:.4f}s")
     

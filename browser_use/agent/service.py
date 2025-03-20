@@ -535,6 +535,21 @@ class Agent(Generic[Context]):
 		finally:
 			llm_end_time = time.time()
 			llm_duration = llm_end_time - llm_start_time
+			
+			# Store detailed LLM timing manually to ensure it's captured
+			from browser_use.utils import _TIMING_DATA, _TIMING_CALLS, _TIMING_MAX, _TIMING_MIN
+			key = "agent.llm_inference"
+			if key not in _TIMING_DATA:
+				_TIMING_DATA[key] = []
+				_TIMING_CALLS[key] = 0
+				_TIMING_MAX[key] = 0.0
+				_TIMING_MIN[key] = float('inf')
+			
+			_TIMING_DATA[key].append(llm_duration)
+			_TIMING_CALLS[key] += 1
+			_TIMING_MAX[key] = max(_TIMING_MAX[key], llm_duration)
+			_TIMING_MIN[key] = min(_TIMING_MIN[key], llm_duration)
+			
 			logger.info(f"[llm] LLM inference time: {llm_duration:.4f}s with {input_token_count} input tokens")
 
 		if parsed is None:
@@ -689,9 +704,37 @@ class Agent(Generic[Context]):
 		cached_path_hashes = set(e.hash.branch_path_hash for e in cached_selector_map.values())
 		selector_time = time.time() - start_time
 		
+		# Store browser selector timing
+		from browser_use.utils import _TIMING_DATA, _TIMING_CALLS, _TIMING_MAX, _TIMING_MIN
+		selector_key = "browser.get_selector_map"
+		if selector_key not in _TIMING_DATA:
+			_TIMING_DATA[selector_key] = []
+			_TIMING_CALLS[selector_key] = 0
+			_TIMING_MAX[selector_key] = 0.0
+			_TIMING_MIN[selector_key] = float('inf')
+		
+		_TIMING_DATA[selector_key].append(selector_time)
+		_TIMING_CALLS[selector_key] += 1
+		_TIMING_MAX[selector_key] = max(_TIMING_MAX[selector_key], selector_time)
+		_TIMING_MIN[selector_key] = min(_TIMING_MIN[selector_key], selector_time)
+		
 		await self.browser_context.remove_highlights()
 		highlight_time = time.time() - start_time - selector_time
+		
+		# Store highlight removal timing
+		highlight_key = "browser.remove_highlights"
+		if highlight_key not in _TIMING_DATA:
+			_TIMING_DATA[highlight_key] = []
+			_TIMING_CALLS[highlight_key] = 0
+			_TIMING_MAX[highlight_key] = 0.0
+			_TIMING_MIN[highlight_key] = float('inf')
+		
+		_TIMING_DATA[highlight_key].append(highlight_time)
+		_TIMING_CALLS[highlight_key] += 1
+		_TIMING_MAX[highlight_key] = max(_TIMING_MAX[highlight_key], highlight_time)
+		_TIMING_MIN[highlight_key] = min(_TIMING_MIN[highlight_key], highlight_time)
 
+		total_controller_time = 0.0
 		for i, action in enumerate(actions):
 			action_start_time = time.time()
 			
@@ -717,6 +760,7 @@ class Agent(Generic[Context]):
 				context=self.context,
 			)
 			controller_time = time.time() - controller_start
+			total_controller_time += controller_time
 
 			results.append(result)
 
@@ -734,6 +778,20 @@ class Agent(Generic[Context]):
 			# hash all elements. if it is a subset of cached_state its fine - else break (new elements on page)
 
 		total_time = time.time() - start_time
+		
+		# Store controller timing
+		controller_key = "agent.controller_execution"
+		if controller_key not in _TIMING_DATA:
+			_TIMING_DATA[controller_key] = []
+			_TIMING_CALLS[controller_key] = 0
+			_TIMING_MAX[controller_key] = 0.0
+			_TIMING_MIN[controller_key] = float('inf')
+		
+		_TIMING_DATA[controller_key].append(total_controller_time)
+		_TIMING_CALLS[controller_key] += 1
+		_TIMING_MAX[controller_key] = max(_TIMING_MAX[controller_key], total_controller_time)
+		_TIMING_MIN[controller_key] = min(_TIMING_MIN[controller_key], total_controller_time)
+		
 		if len(actions) > 0:
 			logger.info(f"[actions] Executed {len(results)}/{len(actions)} actions in {total_time:.4f}s")
 		
