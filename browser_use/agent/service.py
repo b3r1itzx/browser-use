@@ -51,6 +51,7 @@ from browser_use.telemetry.views import (
 	AgentStepTelemetryEvent,
 )
 from browser_use.utils import time_execution_async, time_execution_sync
+from browser_use.dom.service import print_timing_summary
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -620,6 +621,11 @@ class Agent(Generic[Context]):
 
 			return self.state.history
 		finally:
+			# Print overall performance statistics at the end of agent run
+			logger.info("===== FINAL PERFORMANCE SUMMARY =====")
+			print_timing_summary()
+			logger.info("====================================")
+			
 			self.telemetry.capture(
 				AgentEndTelemetryEvent(
 					agent_id=self.state.agent_id,

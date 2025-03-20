@@ -9,6 +9,53 @@
   const { doHighlightElements, focusHighlightIndex, viewportExpansion, debugMode } = args;
   let highlightIndex = 0; // Reset highlight index
 
+  // Performance tracking - always enabled regardless of debugMode
+  const PERF_TIMERS = {
+    start: performance.now(),
+    sections: {},
+    operations: {},
+    logs: []
+  };
+
+  function startTimer(section) {
+    if (!PERF_TIMERS.sections[section]) {
+      PERF_TIMERS.sections[section] = {
+        totalTime: 0,
+        calls: 0,
+        lastStart: performance.now()
+      };
+    } else {
+      PERF_TIMERS.sections[section].lastStart = performance.now();
+    }
+    PERF_TIMERS.sections[section].calls++;
+  }
+
+  function endTimer(section) {
+    const now = performance.now();
+    const elapsed = now - PERF_TIMERS.sections[section].lastStart;
+    PERF_TIMERS.sections[section].totalTime += elapsed;
+    
+    // Log significant timings
+    if (elapsed > 50) {
+      PERF_TIMERS.logs.push(`${section}: ${elapsed.toFixed(2)}ms`);
+    }
+    
+    return elapsed;
+  }
+
+  function recordOperation(operation) {
+    if (!PERF_TIMERS.operations[operation]) {
+      PERF_TIMERS.operations[operation] = {
+        totalTime: 0,
+        calls: 0
+      };
+    }
+    PERF_TIMERS.operations[operation].calls++;
+    return (time) => {
+      PERF_TIMERS.operations[operation].totalTime += time;
+    };
+  }
+
   // Add timing stack to handle recursion
   const TIMING_STACK = {
     nodeProcessing: [],
@@ -85,18 +132,21 @@
 
   // Helper to measure DOM operations
   function measureDomOperation(operation, name) {
-    if (!debugMode) return operation();
-
-    const start = performance.now();
-    const result = operation();
-    const duration = performance.now() - start;
-
-    if (PERF_METRICS && name in PERF_METRICS.buildDomTreeBreakdown.domOperations) {
-      PERF_METRICS.buildDomTreeBreakdown.domOperations[name] += duration;
-      PERF_METRICS.buildDomTreeBreakdown.domOperationCounts[name]++;
+    startTimer(`dom_${name}`);
+    const recordOp = recordOperation(name);
+    
+    try {
+      const result = operation();
+      return result;
+    } finally {
+      const elapsed = endTimer(`dom_${name}`);
+      recordOp(elapsed);
+      
+      if (debugMode && PERF_METRICS && name in PERF_METRICS.buildDomTreeBreakdown.domOperations) {
+        PERF_METRICS.buildDomTreeBreakdown.domOperations[name] += elapsed;
+        PERF_METRICS.buildDomTreeBreakdown.domOperationCounts[name]++;
+      }
     }
-
-    return result;
   }
 
   // Add caching mechanisms at the top level
@@ -111,69 +161,79 @@
 
   // Cache helper functions
   function getCachedBoundingRect(element) {
-    if (!element) return null;
+    startTimer("cacheBoundingRect");
+    try {
+      if (!element) return null;
 
-    if (DOM_CACHE.boundingRects.has(element)) {
+      if (DOM_CACHE.boundingRects.has(element)) {
+        if (debugMode && PERF_METRICS) {
+          PERF_METRICS.cacheMetrics.boundingRectCacheHits++;
+        }
+        return DOM_CACHE.boundingRects.get(element);
+      }
+
       if (debugMode && PERF_METRICS) {
-        PERF_METRICS.cacheMetrics.boundingRectCacheHits++;
+        PERF_METRICS.cacheMetrics.boundingRectCacheMisses++;
       }
-      return DOM_CACHE.boundingRects.get(element);
-    }
 
-    if (debugMode && PERF_METRICS) {
-      PERF_METRICS.cacheMetrics.boundingRectCacheMisses++;
-    }
-
-    let rect;
-    if (debugMode) {
-      const start = performance.now();
-      rect = element.getBoundingClientRect();
-      const duration = performance.now() - start;
-      if (PERF_METRICS) {
-        PERF_METRICS.buildDomTreeBreakdown.domOperations.getBoundingClientRect += duration;
-        PERF_METRICS.buildDomTreeBreakdown.domOperationCounts.getBoundingClientRect++;
+      let rect;
+      if (debugMode) {
+        const start = performance.now();
+        rect = element.getBoundingClientRect();
+        const duration = performance.now() - start;
+        if (PERF_METRICS) {
+          PERF_METRICS.buildDomTreeBreakdown.domOperations.getBoundingClientRect += duration;
+          PERF_METRICS.buildDomTreeBreakdown.domOperationCounts.getBoundingClientRect++;
+        }
+      } else {
+        rect = measureDomOperation(() => element.getBoundingClientRect(), "getBoundingClientRect");
       }
-    } else {
-      rect = element.getBoundingClientRect();
-    }
 
-    if (rect) {
-      DOM_CACHE.boundingRects.set(element, rect);
+      if (rect) {
+        DOM_CACHE.boundingRects.set(element, rect);
+      }
+      return rect;
+    } finally {
+      endTimer("cacheBoundingRect");
     }
-    return rect;
   }
 
   function getCachedComputedStyle(element) {
-    if (!element) return null;
+    startTimer("cacheComputedStyle");
+    try {
+      if (!element) return null;
 
-    if (DOM_CACHE.computedStyles.has(element)) {
+      if (DOM_CACHE.computedStyles.has(element)) {
+        if (debugMode && PERF_METRICS) {
+          PERF_METRICS.cacheMetrics.computedStyleCacheHits++;
+        }
+        return DOM_CACHE.computedStyles.get(element);
+      }
+
       if (debugMode && PERF_METRICS) {
-        PERF_METRICS.cacheMetrics.computedStyleCacheHits++;
+        PERF_METRICS.cacheMetrics.computedStyleCacheMisses++;
       }
-      return DOM_CACHE.computedStyles.get(element);
-    }
 
-    if (debugMode && PERF_METRICS) {
-      PERF_METRICS.cacheMetrics.computedStyleCacheMisses++;
-    }
-
-    let style;
-    if (debugMode) {
-      const start = performance.now();
-      style = window.getComputedStyle(element);
-      const duration = performance.now() - start;
-      if (PERF_METRICS) {
-        PERF_METRICS.buildDomTreeBreakdown.domOperations.getComputedStyle += duration;
-        PERF_METRICS.buildDomTreeBreakdown.domOperationCounts.getComputedStyle++;
+      let style;
+      if (debugMode) {
+        const start = performance.now();
+        style = window.getComputedStyle(element);
+        const duration = performance.now() - start;
+        if (PERF_METRICS) {
+          PERF_METRICS.buildDomTreeBreakdown.domOperations.getComputedStyle += duration;
+          PERF_METRICS.buildDomTreeBreakdown.domOperationCounts.getComputedStyle++;
+        }
+      } else {
+        style = measureDomOperation(() => window.getComputedStyle(element), "getComputedStyle");
       }
-    } else {
-      style = window.getComputedStyle(element);
-    }
 
-    if (style) {
-      DOM_CACHE.computedStyles.set(element, style);
+      if (style) {
+        DOM_CACHE.computedStyles.set(element, style);
+      }
+      return style;
+    } finally {
+      endTimer("cacheComputedStyle");
     }
-    return style;
   }
 
   /**
@@ -793,15 +853,23 @@
    * Creates a node data object for a given node and its descendants.
    */
   function buildDomTree(node, parentIframe = null) {
+    startTimer("buildDomTree");
+    startTimer("buildDomTree_overhead");
+    
     if (debugMode) PERF_METRICS.nodeMetrics.totalNodes++;
 
     if (!node || node.id === HIGHLIGHT_CONTAINER_ID) {
       if (debugMode) PERF_METRICS.nodeMetrics.skippedNodes++;
+      endTimer("buildDomTree_overhead");
+      endTimer("buildDomTree");
       return null;
     }
 
+    endTimer("buildDomTree_overhead");
+
     // Special handling for root node (body)
     if (node === document.body) {
+      startTimer("buildDomTree_body");
       const nodeData = {
         tagName: 'body',
         attributes: {},
@@ -810,28 +878,40 @@
       };
 
       // Process children of body
+      startTimer("buildDomTree_body_children");
       for (const child of node.childNodes) {
         const domElement = buildDomTree(child, parentIframe);
         if (domElement) nodeData.children.push(domElement);
       }
+      endTimer("buildDomTree_body_children");
 
       const id = `${ID.current++}`;
       DOM_HASH_MAP[id] = nodeData;
       if (debugMode) PERF_METRICS.nodeMetrics.processedNodes++;
+      
+      endTimer("buildDomTree_body");
+      endTimer("buildDomTree");
       return id;
     }
 
     // Early bailout for non-element nodes except text
+    startTimer("buildDomTree_nodeType_check");
     if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.TEXT_NODE) {
       if (debugMode) PERF_METRICS.nodeMetrics.skippedNodes++;
+      endTimer("buildDomTree_nodeType_check");
+      endTimer("buildDomTree");
       return null;
     }
+    endTimer("buildDomTree_nodeType_check");
 
     // Process text nodes
     if (node.nodeType === Node.TEXT_NODE) {
+      startTimer("buildDomTree_text_node");
       const textContent = node.textContent.trim();
       if (!textContent) {
         if (debugMode) PERF_METRICS.nodeMetrics.skippedNodes++;
+        endTimer("buildDomTree_text_node");
+        endTimer("buildDomTree");
         return null;
       }
 
@@ -839,26 +919,40 @@
       const parentElement = node.parentElement;
       if (!parentElement || parentElement.tagName.toLowerCase() === 'script') {
         if (debugMode) PERF_METRICS.nodeMetrics.skippedNodes++;
+        endTimer("buildDomTree_text_node");
+        endTimer("buildDomTree");
         return null;
       }
 
       const id = `${ID.current++}`;
+      startTimer("buildDomTree_isTextNodeVisible");
+      const isVisible = isTextNodeVisible(node);
+      endTimer("buildDomTree_isTextNodeVisible");
+      
       DOM_HASH_MAP[id] = {
         type: "TEXT_NODE",
         text: textContent,
-        isVisible: isTextNodeVisible(node),
+        isVisible: isVisible,
       };
+      
       if (debugMode) PERF_METRICS.nodeMetrics.processedNodes++;
+      endTimer("buildDomTree_text_node");
+      endTimer("buildDomTree");
       return id;
     }
 
     // Quick checks for element nodes
+    startTimer("buildDomTree_element_check");
     if (node.nodeType === Node.ELEMENT_NODE && !isElementAccepted(node)) {
       if (debugMode) PERF_METRICS.nodeMetrics.skippedNodes++;
+      endTimer("buildDomTree_element_check");
+      endTimer("buildDomTree");
       return null;
     }
+    endTimer("buildDomTree_element_check");
 
     // Early viewport check - only filter out elements clearly outside viewport
+    startTimer("buildDomTree_viewport_check");
     if (viewportExpansion !== -1) {
       const rect = getCachedBoundingRect(node);
       const style = getCachedComputedStyle(node);
@@ -876,40 +970,53 @@
         rect.left > window.innerWidth + viewportExpansion
       ))) {
         if (debugMode) PERF_METRICS.nodeMetrics.skippedNodes++;
+        endTimer("buildDomTree_viewport_check");
+        endTimer("buildDomTree");
         return null;
       }
     }
+    endTimer("buildDomTree_viewport_check");
 
     // Process element node
+    startTimer("buildDomTree_create_element");
     const nodeData = {
       tagName: node.tagName.toLowerCase(),
       attributes: {},
       xpath: getXPathTree(node, true),
       children: [],
     };
+    endTimer("buildDomTree_create_element");
 
     // Get attributes for interactive elements or potential text containers
+    startTimer("buildDomTree_attributes");
     if (isInteractiveCandidate(node) || node.tagName.toLowerCase() === 'iframe' || node.tagName.toLowerCase() === 'body') {
       const attributeNames = node.getAttributeNames?.() || [];
       for (const name of attributeNames) {
         nodeData.attributes[name] = node.getAttribute(name);
       }
     }
+    endTimer("buildDomTree_attributes");
 
-    // if (isInteractiveCandidate(node)) {
-
-    // Check interactivity
+    // Check interactivity and visibility
+    startTimer("buildDomTree_visibility_check");
     if (node.nodeType === Node.ELEMENT_NODE) {
       nodeData.isVisible = isElementVisible(node);
       if (nodeData.isVisible) {
+        startTimer("buildDomTree_top_element_check");
         nodeData.isTopElement = isTopElement(node);
+        endTimer("buildDomTree_top_element_check");
+        
         if (nodeData.isTopElement) {
+          startTimer("buildDomTree_interactive_check");
           nodeData.isInteractive = isInteractiveElement(node);
+          endTimer("buildDomTree_interactive_check");
+          
           if (nodeData.isInteractive) {
             nodeData.isInViewport = true;
             nodeData.highlightIndex = highlightIndex++;
 
             if (doHighlightElements) {
+              startTimer("buildDomTree_highlight");
               if (focusHighlightIndex >= 0) {
                 if (focusHighlightIndex === nodeData.highlightIndex) {
                   highlightElement(node, nodeData.highlightIndex, parentIframe);
@@ -917,13 +1024,16 @@
               } else {
                 highlightElement(node, nodeData.highlightIndex, parentIframe);
               }
+              endTimer("buildDomTree_highlight");
             }
           }
         }
       }
     }
+    endTimer("buildDomTree_visibility_check");
 
     // Process children, with special handling for iframes and rich text editors
+    startTimer("buildDomTree_process_children");
     if (node.tagName) {
       const tagName = node.tagName.toLowerCase();
 
@@ -971,16 +1081,23 @@
         }
       }
     }
+    endTimer("buildDomTree_process_children");
 
     // Skip empty anchor tags
+    startTimer("buildDomTree_empty_check");
     if (nodeData.tagName === 'a' && nodeData.children.length === 0 && !nodeData.attributes.href) {
       if (debugMode) PERF_METRICS.nodeMetrics.skippedNodes++;
+      endTimer("buildDomTree_empty_check");
+      endTimer("buildDomTree");
       return null;
     }
+    endTimer("buildDomTree_empty_check");
 
     const id = `${ID.current++}`;
     DOM_HASH_MAP[id] = nodeData;
     if (debugMode) PERF_METRICS.nodeMetrics.processedNodes++;
+    
+    endTimer("buildDomTree");
     return id;
   }
 
@@ -1000,6 +1117,38 @@
   if (DOM_CACHE.boundingRects.size > 10000) {
     DOM_CACHE.clearCache();
   }
+
+  // Generate performance summary
+  PERF_TIMERS.totalTime = performance.now() - PERF_TIMERS.start;
+  
+  // Calculate section percentages
+  const perfSummary = {
+    totalTimeMs: PERF_TIMERS.totalTime.toFixed(2),
+    sections: {},
+    operations: {},
+    nodeCount: Object.keys(DOM_HASH_MAP).length
+  };
+  
+  Object.keys(PERF_TIMERS.sections).forEach(section => {
+    const sectionTime = PERF_TIMERS.sections[section].totalTime;
+    const percentage = (sectionTime / PERF_TIMERS.totalTime) * 100;
+    perfSummary.sections[section] = {
+      timeMs: sectionTime.toFixed(2),
+      percentage: percentage.toFixed(2),
+      calls: PERF_TIMERS.sections[section].calls
+    };
+  });
+  
+  Object.keys(PERF_TIMERS.operations).forEach(operation => {
+    const opTime = PERF_TIMERS.operations[operation].totalTime;
+    const percentage = (opTime / PERF_TIMERS.totalTime) * 100;
+    perfSummary.operations[operation] = {
+      timeMs: opTime.toFixed(2),
+      percentage: percentage.toFixed(2),
+      calls: PERF_TIMERS.operations[operation].calls,
+      avgTimeMs: (opTime / PERF_TIMERS.operations[operation].calls).toFixed(2)
+    };
+  });
 
   // Only process metrics in debug mode
   if (debugMode && PERF_METRICS) {
@@ -1051,12 +1200,13 @@
     }
   }
 
-  // Return the stringified JSON instead of the object
-  return JSON.stringify(
-    debugMode ?
-      { rootId, map: DOM_HASH_MAP, perfMetrics: PERF_METRICS } :
-      { rootId, map: DOM_HASH_MAP }
-  );
+  // Return the stringified JSON with performance data
+  return JSON.stringify({
+    rootId, 
+    map: DOM_HASH_MAP,
+    perfMetrics: debugMode ? PERF_METRICS : null,
+    perfSummary
+  });
 };
 
 // In JavaScript, implement chunk processing
