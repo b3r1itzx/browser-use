@@ -48,12 +48,26 @@
     if (!PERF_TIMERS.operations[operation]) {
       PERF_TIMERS.operations[operation] = {
         totalTime: 0,
-        calls: 0
+        calls: 0,
+        timeMs: "0.00",
+        percentage: "0.00",
+        avgTimeMs: "0.00"
       };
     }
     PERF_TIMERS.operations[operation].calls++;
     return (time) => {
       PERF_TIMERS.operations[operation].totalTime += time;
+      // Update timeMs every time
+      PERF_TIMERS.operations[operation].timeMs = PERF_TIMERS.operations[operation].totalTime.toFixed(2);
+      
+      // Calculate current percentage
+      const totalTime = performance.now() - PERF_TIMERS.start;
+      PERF_TIMERS.operations[operation].percentage = 
+        ((PERF_TIMERS.operations[operation].totalTime / totalTime) * 100).toFixed(2);
+        
+      // Update average
+      PERF_TIMERS.operations[operation].avgTimeMs = 
+        (PERF_TIMERS.operations[operation].totalTime / PERF_TIMERS.operations[operation].calls).toFixed(2);
     };
   }
 
@@ -1211,30 +1225,43 @@
     startTimer("performance_summary");
     let totalTime = performance.now() - PERF_TIMERS.start;
     
-    // Calculate percentages for each section
-    for (const section in PERF_TIMERS.sections) {
-      const sectionData = PERF_TIMERS.sections[section];
-      sectionData.percentage = ((sectionData.totalTime / totalTime) * 100).toFixed(2);
-      sectionData.timeMs = sectionData.totalTime.toFixed(2);
-    }
-    
-    // Calculate percentages for each operation
-    for (const op in PERF_TIMERS.operations) {
-      const opData = PERF_TIMERS.operations[op];
-      if (opData.calls > 0) {
-        opData.percentage = ((opData.totalTime / totalTime) * 100).toFixed(2);
-        opData.timeMs = opData.totalTime.toFixed(2);
-        opData.avgTimeMs = (opData.totalTime / opData.calls).toFixed(2);
-      }
-    }
-    
     finalResult.perfSummary = {
       totalTimeMs: totalTime.toFixed(2),
       nodeCount: Object.keys(DOM_HASH_MAP).length,
-      sections: PERF_TIMERS.sections,
-      operations: PERF_TIMERS.operations,
+      sections: {},
+      operations: {},
       logs: PERF_TIMERS.logs
     };
+    
+    // Create fresh section objects with all required properties
+    for (const section in PERF_TIMERS.sections) {
+      const sectionData = PERF_TIMERS.sections[section];
+      const sectionTime = sectionData.totalTime;
+      const percentage = (sectionTime / totalTime) * 100;
+      
+      finalResult.perfSummary.sections[section] = {
+        timeMs: sectionTime.toFixed(2),
+        percentage: percentage.toFixed(2),
+        calls: sectionData.calls
+      };
+    }
+    
+    // Create fresh operation objects with all required properties
+    for (const op in PERF_TIMERS.operations) {
+      const opData = PERF_TIMERS.operations[op];
+      if (opData.calls > 0) {
+        const opTime = opData.totalTime || 0;
+        const percentage = (opTime / totalTime) * 100;
+        
+        finalResult.perfSummary.operations[op] = {
+          timeMs: opTime.toFixed(2),
+          percentage: percentage.toFixed(2),
+          calls: opData.calls,
+          avgTimeMs: (opTime / opData.calls).toFixed(2)
+        };
+      }
+    }
+    
     endTimer("performance_summary");
   }
   
@@ -1304,7 +1331,28 @@
     
     // Copy performance data if it exists
     if (finalResult.perfSummary) {
-      compressedResult.perfSummary = JSON.parse(JSON.stringify(finalResult.perfSummary));
+      // Create a new perfSummary with all required properties properly set
+      compressedResult.perfSummary = {
+        totalTimeMs: finalResult.perfSummary.totalTimeMs,
+        nodeCount: finalResult.perfSummary.nodeCount,
+        sections: {},
+        operations: {},
+        logs: [...finalResult.perfSummary.logs]
+      };
+      
+      // Copy sections
+      for (const section in finalResult.perfSummary.sections) {
+        compressedResult.perfSummary.sections[section] = {
+          ...finalResult.perfSummary.sections[section]
+        };
+      }
+      
+      // Copy operations
+      for (const op in finalResult.perfSummary.operations) {
+        compressedResult.perfSummary.operations[op] = {
+          ...finalResult.perfSummary.operations[op]
+        };
+      }
       
       // Add compression stats to performance summary
       const originalSize = JSON.stringify(finalResult).length;
@@ -1316,7 +1364,8 @@
         originalSizeBytes: originalSize,
         compressedSizeBytes: compressedSize,
         compressionRatio: compressionRatio,
-        timeMs: compressionTime.toFixed(2)
+        timeMs: compressionTime.toFixed(2),
+        percentage: ((compressionTime / parseFloat(compressedResult.perfSummary.totalTimeMs)) * 100).toFixed(2)
       };
       
       compressedResult.perfSummary.logs.push(`Compression: ${compressionRatio}% reduction (${originalSize} → ${compressedSize} bytes)`);
